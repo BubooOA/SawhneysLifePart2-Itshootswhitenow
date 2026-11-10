@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sawhney's Life Part 2</title>
+    <!-- Tailwind CSS for modern responsive UI and styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        .retro-font {
+            font-family: 'Press Start 2P', monospace;
+        }
+        body {
+            background-color: #121c1f;
+            color: #f1d2a4;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+        canvas {
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen m-0 p-4 overflow-hidden">
+
+    <!-- Top Header / Title Bar -->
+    <div class="mb-2 text-center">
+        <h1 class="retro-font text-xl md:text-2xl text-[#f2d579] tracking-wider drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">SAWHNEY'S LIFE PART 2</h1>
+        <p class="text-xs text-gray-400 mt-1">Move: WASD/Arrows | Aim: Mouse | Shoot: Click/Space | Restart: Enter</p>
+    </div>
+
+    <!-- Game Container with Responsive Canvas & Overlays -->
+    <div class="relative shadow-2xl rounded-xl overflow-hidden border-4 border-[#2c4146] bg-[#182629] max-w-full aspect-[800/540]" style="width: 800px; max-height: 80vh;">
+        
+        <!-- HTML5 Canvas -->
+        <canvas id="gameCanvas" width="800" height="540" class="block w-full h-full cursor-crosshair"></canvas>
+
+        <!-- Shop Overlay -->
+        <div id="shopOverlay" class="absolute inset-0 bg-[#111c1f]/90 flex flex-col items-center justify-center p-6 hidden z-20 backdrop-blur-sm">
+            <div class="border-3 border-[#96b69d] rounded-xl p-6 bg-[#182629]/95 max-w-md w-full shadow-2xl text-center">
+                <h2 id="shopTitle" class="retro-font text-sm md:text-base text-[#f2d579] mb-4">LEVEL UP: PICK AN UPGRADE</h2>
+                <div id="shopOptions" class="space-y-3 my-4">
+                    <!-- Dynamic upgrade buttons inserted via JS -->
+                </div>
+                <p class="text-xs text-gray-400 mt-2">Click option or press 1, 2, 3</p>
+            </div>
+        </div>
+
+        <!-- Game Over Overlay -->
+        <div id="gameOverOverlay" class="absolute inset-0 bg-black/85 flex flex-col items-center justify-center p-6 hidden z-20">
+            <div class="text-center p-8 rounded-xl bg-[#182629] border-2 border-[#e45c73] shadow-2xl max-w-sm w-full">
+                <h2 class="retro-font text-xl text-[#e45c73] mb-4">GAME OVER</h2>
+                <p id="finalStats" class="text-xs text-gray-300 mb-6 font-mono"></p>
+                <button onclick="resetGame()" class="retro-font text-xs bg-[#55a36a] hover:bg-[#438253] text-white px-6 py-3 rounded-lg shadow-lg transition transform hover:scale-105 active:scale-95 cursor-pointer">
+                    PLAY AGAIN (ENTER)
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Mobile Virtual Controls / Quick Action Bar for Touch Devices -->
+    <div class="mt-3 flex gap-4 md:hidden">
+        <button id="shootBtn" class="retro-font text-xs bg-[#bd4c5a] text-white px-4 py-2 rounded shadow active:bg-[#9a3a47]">FIRE</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const W = 800, H = 540;
+
+        // Pixel Sprites configuration matching the Python original
+        const SPRITES = {
+            "p": [".p.", "ppp", "p.p"],
+            "z": ["zzz", "z.z", ".z."],
+            "v": ["vvv", "v.v", "d.d"]
+        };
+        const COLORS = {
+            "p": "#f1d2a4",
+            "z": "#55a36a",
+            "v": "#bd4c5a",
+            "d": "#493450"
+        };
+
+        // Upgrade Families & Generation
+        const FAMILIES = [
+            ("fire", 25, 4, .06),
+            ("speed", 25, 3, .08),
+            ("life", 25, 5, 1),
+            ("regen", 24, 5, .5)
+        ];
+
+        let upgrades = [];
+        // Rebuild upgrades array mirroring python logic
+        const familyData = [
+            { kind: 'fire', count: 25, base: 4, step: 0.06 },
+            { kind: 'speed', count: 25, base: 3, step: 0.08 },
+            { kind: 'life', count: 25, base: 5, step: 1 },
+            { kind: 'regen', count: 24, base: 5, step: 0.5 }
+        ];
+
+        familyData.forEach(fam => {
+            for (let tier = 0; tier < fam.count; tier++) {
+                upgrades.push({
+                    kind: fam.kind,
+                    name: `${fam.kind.charAt(0).toUpperCase() + fam.kind.slice(1)} ${tier + 1}`,
+                    cost: Math.min(25, fam.base + tier),
+                    value: fam.step * (tier + 1)
+                });
+            }
+        });
+        upgrades.push({ kind: "rail", name: "Whiteout Railgun", cost: 50, value: 1 });
+
+        // Game State Object
+        let game = {};
+
+        // Web Audio API Sound Synthesizer for Retro SFX
+        let audioCtx = null;
+        function initAudio() {
+            if (!audioCtx) {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+        }
+
+        function playSound(type) {
+            try {
+                initAudio();
+                if (!audioCtx) return;
+                let osc = audioCtx.createOscillator();
+                let gain = audioCtx.createGain();
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                let now = audioCtx.currentTime;
+
+                if (type === 'shoot') {
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(400, now);
+                    osc.frequency.exponentialRampToValueAtTime(100, now + 0.08);
+                    gain.gain.setValueAtTime(0.15, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.08);
+                    osc.start(now);
+                    osc.stop(now + 0.08);
+                } else if (type === 'hit') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(120, now);
+                    osc.frequency.linearRampToValueAtTime(40, now + 0.12);
+                    gain.gain.setValueAtTime(0.2, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.12);
+                    osc.start(now);
+                    osc.stop(now + 0.12);
+                } else if (type === 'upgrade') {
+                    osc.type = 'sine';
+                    osc.frequency.setValueAtTime(300, now);
+                    osc.frequency.setValueAtTime(450, now + 0.08);
+                    osc.frequency.setValueAtTime(600, now + 0.16);
+                    gain.gain.setValueAtTime(0.15, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.25);
+                    osc.start(now);
+                    osc.stop(now + 0.25);
+                } else if (type === 'hurt') {
+                    osc.type = 'square';
+                    osc.frequency.setValueAtTime(150, now);
+                    osc.frequency.linearRampToValueAtTime(80, now + 0.2);
+                    gain.gain.setValueAtTime(0.25, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.2);
+                    osc.start(now);
+                    osc.stop(now + 0.2);
+                } else if (type === 'gameover') {
+                    osc.type = 'sawtooth';
+                    osc.frequency.setValueAtTime(200, now);
+                    osc.frequency.linearRampToValueAtTime(50, now + 0.6);
+                    gain.gain.setValueAtTime(0.3, now);
+                    gain.gain.linearRampToValueAtTime(0.01, now + 0.6);
+                    osc.start(now);
+                    osc.stop(now + 0.6);
+                }
+            } catch (e) {
+                console.warn("Audio error:", e);
+            }
+        }
+
+        function resetGame() {
+            game = {
+                x: W / 2,
+                y: H / 2,
+                keys: new Set(),
+                enemies: [],
+                shots: [],
+                bad_shots: [],
+                options: [],
+                stats: { fire: 0, speed: 0, life: 0, regen: 0 },
+                lives: 3,
+                max_lives: 3,
+                money: 0,
+                kills: 0,
+                level: 0,
+                rail: 0,
+                mouse: false,
+                space: false,
+                mx: W / 2,
+                my: H / 2,
+                shot_time: 0,
+                spawn_time: 0,
+                hit_time: 0,
+                regen_time: 0,
+                mode: "play"
+            };
+            document.getElementById('shopOverlay').classList.add('hidden');
+            document.getElementById('gameOverOverlay').classList.add('hidden');
+        }
+
+        // Spawn Enemy Logic
+        function spawnEnemy(now) {
+            let x = Math.random() * W;
+            let y = Math.random() * H;
+            let side = Math.floor(Math.random() * 4);
+            x = side === 0 ? -10 : side === 1 ? W + 10 : x;
+            y = side === 2 ? -10 : side === 3 ? H + 10 : y;
+            let vampire = game.level > 10 && Math.random() < 0.35;
+            game.enemies.push({ x: x, y: y, hp: 2, v: vampire, time: now });
+        }
+
+        function killedEnemy(enemy) {
+            const index = game.enemies.indexOf(enemy);
+            if (index === -1) return;
+            game.enemies.splice(index, 1);
+            game.kills += 1;
+            game.money += 2;
+            playSound('hit');
+            if (game.mode === "play" && game.kills >= (game.level + 1) * 10) {
+                game.level += 1;
+                playSound('upgrade');
+                offerUpgrades();
+            }
+        }
+
+        function offerUpgrades() {
+            let choices = upgrades.filter(item => item.kind !== "rail" && item.cost <= game.money);
+            let rail = upgrades.find(item => item.kind === "rail");
+            
+            // Fallback if not enough affordable upgrades
+            if (choices.length < 3) {
+                choices = upgrades.filter(item => item.kind !== "rail");
+            }
+            
+            // Random sample 3
+            let selected = [];
+            let tempChoices = [...choices];
+            for (let i = 0; i < 3 && tempChoices.length > 0; i++) {
+                let idx = Math.floor(Math.random() * tempChoices.length);
+                selected.push(tempChoices.splice(idx, 1)[0]);
+            }
+            
+            if (game.money >= 50 && Math.random() < 0.35 && rail) {
+                if (selected.length > 0) selected[selected.length - 1] = rail;
+                else selected = [rail];
+            }
+            
+            game.options = selected;
+            game.mode = "shop";
+            renderShop();
+        }
+
+        function chooseUpgrade(index) {
+            if (index < 0 || index >= game.options.length) return;
+            let item = game.options[index];
+            if (item.cost > game.money) return;
+            
+            game.money -= item.cost;
+            playSound('upgrade');
+            if (item.kind === "rail") {
+                game.rail += 1;
+            } else {
+                game.stats[item.kind] += item.value;
+            }
+            if (item.kind === "life") {
+                game.lives += item.value;
+                game.max_lives += item.value;
+            }
+            game.mode = "play";
+            document.getElementById('shopOverlay').classList.add('hidden');
+        }
+
+        function renderShop() {
+            const container = document.getElementById('shopOptions');
+            container.innerHTML = '';
+            game.options.forEach((item, idx) => {
+                let btn = document.createElement('button');
+                btn.className = "w-full py-3 px-4 bg-[#23373b] hover:bg-[#2c4146] text-[#f2d579] rounded-lg border border-[#48676d] text-xs font-mono transition flex justify-between items-center cursor-pointer";
+                btn.innerHTML = `<span>${idx + 1}. ${item.name}</span> <span class="bg-[#121c1f] px-2 py-1 rounded text-white">$${item.cost}</span>`;
+                btn.onclick = () => chooseUpgrade(idx);
+                container.appendChild(btn);
+            });
+            document.getElementById('shopOverlay').classList.remove('hidden');
+        }
+
+        function hurtPlayer(now) {
+            if (now - game.hit_time <= 0.8) return;
+            game.lives -= 1;
+            game.hit_time = now;
+            playSound('hurt');
+            if (game.lives <= 0) {
+                game.mode = "over";
+                playSound('gameover');
+                document.getElementById('finalStats').innerText = `LEVEL: ${game.level} | KILLS: ${game.kills} | MONEY: $${game.money}`;
+                document.getElementById('gameOverOverlay').classList.remove('hidden');
+            }
+        }
+
+        function fireWeapon(now) {
+            if (!(game.mouse || game.space)) return;
+            let cooldown = Math.max(0.07, 0.24 / (1 + game.stats.fire));
+            if (now - game.shot_time < cooldown) return;
+            
+            game.shot_time = now;
+            playSound('shoot');
+            let angle = Math.atan2(game.my - game.y, game.mx - game.x);
+            
+            if (game.rail > 0) {
+                let dx = Math.cos(angle);
+                let dy = Math.sin(angle);
+                let hits = game.enemies.filter(e => 
+                    (e.x - game.x) * dx + (e.y - game.y) * dy > 0 && 
+                    Math.abs((e.x - game.x) * dy - (e.y - game.y) * dx) < 20
+                );
+                if (hits.length > 0) {
+                    let first = hits.reduce((minObj, e) => 
+                        Math.hypot(e.x - game.x, e.y - game.y) < Math.hypot(minObj.x - game.x, minObj.y - game.y) ? e : minObj
+                    );
+                    let chain = [first, ...game.enemies.filter(e => e !== first && Math.hypot(e.x - first.x, e.y - first.y) < 200).slice(0, 2 + 2 * (game.rail - 1))];
+                    chain.forEach(enemy => killedEnemy(enemy));
+                }
+                return;
+            }
+            
+            game.shots.push([game.x, game.y, Math.cos(angle) * 6, Math.sin(angle) * 6]);
+        }
+
+        // Input Handlers
+        window.addEventListener('keydown', (e) => {
+            let key = e.key.toLowerCase();
+            if (["arrowup", "arrowdown", "arrowleft", "arrowright", " "].includes(e.key.toLowerCase())) {
+                e.preventDefault(); // Prevent page scroll
+            }
+            game.keys.add(key);
+            if (key === " " || key === "spacebar") {
+                game.space = true;
+            }
+            if (game.mode === "shop" && ["1", "2", "3"].includes(key)) {
+                chooseUpgrade(parseInt(key) - 1);
+            }
+            if (game.mode === "over" && key === "enter") {
+                resetGame();
+            }
+        });
+
+        window.addEventListener('keyup', (e) => {
+            let key = e.key.toLowerCase();
+            game.keys.delete(key);
+            if (key === " " || key === "spacebar") {
+                game.space = false;
+            }
+        });
+
+        canvas.addEventListener('mousemove', (e) => {
+            let rect = canvas.getBoundingClientRect();
+            let scaleX = canvas.width / rect.width;
+            let scaleY = canvas.height / rect.height;
+            game.mx = (e.clientX - rect.left) * scaleX;
+            game.my = (e.clientY - rect.top) * scaleY;
+        });
+
+        canvas.addEventListener('mousedown', () => { game.mouse = true; });
+        canvas.addEventListener('mouseup', () => { game.mouse = false; });
+        canvas.addEventListener('mouseleave', () => { game.mouse = false; });
+
+        // Touch support for mobile aiming & shooting
+        canvas.addEventListener('touchmove', (e) => {
+            e.preventDefault();
+            let rect = canvas.getBoundingClientRect();
+            let scaleX = canvas.width / rect.width;
+            let scaleY = canvas.height / rect.height;
+            if (e.touches.length > 0) {
+                game.mx = (e.touches[0].clientX - rect.left) * scaleX;
+                game.my = (e.touches[0].clientY - rect.top) * scaleY;
+                game.mouse = true;
+            }
+        }, { passive: false });
+
+        canvas.addEventListener('touchstart', (e) => {
+            game.mouse = true;
+        });
+        canvas.addEventListener('touchend', () => { game.mouse = false; });
+
+        document.getElementById('shootBtn').addEventListener('touchstart', () => { game.space = true; });
+        document.getElementById('shootBtn').addEventListener('touchend', () => { game.space = false; });
+
+        // Main Update & Logic Loop
+        function updateGame() {
+            let now = performance.now() / 1000;
+
+            if (game.mode === "play") {
+                let keys = game.keys;
+                let dx = ((keys.has("d") || keys.has("arrowright")) ? 1 : 0) - ((keys.has("a") || keys.has("arrowleft")) ? 1 : 0);
+                let dy = ((keys.has("s") || keys.has("arrowdown")) ? 1 : 0) - ((keys.has("w") || keys.has("arrowup")) ? 1 : 0);
+                
+                let speed = 3 + game.stats.speed;
+                let length = Math.hypot(dx, dy) || 1;
+                
+                game.x = Math.min(W - 15, Math.max(15, game.x + (dx / length) * speed));
+                game.y = Math.min(H - 15, Math.max(45, game.y + (dy / length) * speed));
+
+                if (now - game.spawn_time > Math.max(0.35, 1.1 - game.kills * 0.004)) {
+                    spawnEnemy(now);
+                    game.spawn_time = now;
+                }
+
+                fireWeapon(now);
+
+                // Update Player Shots
+                for (let i = game.shots.length - 1; i >= 0; i--) {
+                    let shot = game.shots[i];
+                    shot[0] += shot[2];
+                    shot[1] += shot[3];
+                    if (shot[0] < 0 || shot[0] > W || shot[1] < 0 || shot[1] > H) {
+                        game.shots.splice(i, 1);
+                        continue;
+                    }
+                    let hit = false;
+                    for (let j = game.enemies.length - 1; j >= 0; j--) {
+                        let enemy = game.enemies[j];
+                        if (Math.hypot(enemy.x - shot[0], enemy.y - shot[1]) < 18) {
+                            enemy.hp -= 1;
+                            if (enemy.hp <= 0) {
+                                killedEnemy(enemy);
+                            }
+                            hit = true;
+                            break;
+                        }
+                    }
+                    if (hit) {
+                        game.shots.splice(i, 1);
+                    }
+                }
+
+                // Update Enemies
+                for (let enemy of game.enemies) {
+                    let angle = Math.atan2(game.y - enemy.y, game.x - enemy.x);
+                    enemy.x += Math.cos(angle) * 0.65;
+                    enemy.y += Math.sin(angle) * 0.65;
+
+                    if (Math.hypot(enemy.x - game.x, enemy.y - game.y) < 20 && now - game.hit_time > 0.8) {
+                        hurtPlayer(now);
+                    }
+
+                    if (enemy.v && now - enemy.time > 2.4) {
+                        game.bad_shots.push([enemy.x, enemy.y, Math.cos(angle) * 2, Math.sin(angle) * 2]);
+                        enemy.time = now;
+                    }
+                }
+
+                // Update Bad Shots
+                for (let i = game.bad_shots.length - 1; i >= 0; i--) {
+                    let shot = game.bad_shots[i];
+                    shot[0] += shot[2];
+                    shot[1] += shot[3];
+                    if (Math.hypot(shot[0] - game.x, shot[1] - game.y) < 14 && now - game.hit_time > 0.8) {
+                        hurtPlayer(now);
+                        game.bad_shots.splice(i, 1);
+                    } else if (shot[0] < 0 || shot[0] > W || shot[1] < 0 || shot[1] > H) {
+                        game.bad_shots.splice(i, 1);
+                    }
+                }
+
+                // Health Regen
+                if (game.stats.regen > 0 && game.lives < game.max_lives && now - game.regen_time > Math.max(5, 35 / game.stats.regen)) {
+                    game.lives += 1;
+                    game.regen_time = now;
+                }
+            }
+
+            drawGame();
+            requestAnimationFrame(updateGame);
+        }
+
+        // Draw Sprite Helper
+        function drawSprite(kind, x, y) {
+            let spriteData = SPRITES[kind];
+            if (!spriteData) return;
+            spriteData.forEach((line, row) => {
+                for (let col = 0; col < line.length; col++) {
+                    let pixel = line[col];
+                    if (pixel !== ".") {
+                        let color = pixel === "d" ? COLORS["d"] : COLORS[kind];
+                        ctx.fillStyle = color;
+                        ctx.strokeStyle = color;
+                        ctx.fillRect(x + col * 7 - 7, y + row * 7 - 7, 7, 7);
+                    }
+                }
+            });
+        }
+
+        // Render Canvas Graphics
+        function drawGame() {
+            ctx.clearRect(0, 0, W, H);
+            ctx.fillStyle = "#182629";
+            ctx.fillRect(0, 0, W, H);
+
+            // Draw HUD Info
+            ctx.fillStyle = "white";
+            ctx.font = "12px 'Press Start 2P', monospace";
+            ctx.fillText(`SAWHNEY LIVES ${game.lives}/${game.max_lives}  KILLS ${game.kills}  $${game.money}  LEVEL ${game.level}`, 10, 25);
+
+            // Draw Enemies
+            for (let enemy of game.enemies) {
+                drawSprite(enemy.v ? "v" : "z", enemy.x, enemy.y);
+                ctx.fillStyle = "white";
+                ctx.font = "10px monospace";
+                ctx.fillText("*".repeat(enemy.hp), enemy.x - 6, enemy.y + 22);
+            }
+
+            // Draw Player
+            drawSprite("p", game.x, game.y);
+
+            // Draw Shots
+            for (let shot of game.shots) {
+                ctx.fillStyle = "white";
+                ctx.fillRect(shot[0] - 3, shot[1] - 3, 6, 6);
+            }
+            for (let shot of game.bad_shots) {
+                ctx.fillStyle = "#e45c73";
+                ctx.fillRect(shot[0] - 3, shot[1] - 3, 6, 6);
+            }
+        }
+
+        // Initialize and Start Loop
+        window.onload = function() {
+            resetGame();
+            requestAnimationFrame(updateGame);
+        };
+    </script>
+</body>
+</html>
